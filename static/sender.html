@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>手机摄像头传输</title>
+<style>
+  :root { --bg:#23272b; --accent:#2f7ddf; --ok:#27ae60; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; }
+  body { background:var(--bg); color:#eef1f5; font-family:sans-serif;
+         display:flex; flex-direction:column; min-height:100vh; }
+  header { padding:8px 16px; text-align:center; background:rgba(0,0,0,.4); }
+  header h1 { font-size:16px; letter-spacing:1px; }
+  header p { font-size:12px; color:#9aa; margin-top:2px; }
+
+  .app { flex:1; display:flex; flex-direction:column; min-height:0; }
+  .stage { flex:1; position:relative; margin:10px; background:#000; border-radius:12px; overflow:hidden;
+           display:flex; align-items:center; justify-content:center; min-width:0; min-height:0; }
+  .stage video { width:100%; height:100%; object-fit:contain; background:#000; }
+  .hint { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+          color:#889; font-size:14px; letter-spacing:1px; text-align:center; }
+  .panel { padding:0 12px 10px; display:flex; flex-direction:column; gap:8px; }
+
+  .controls { display:flex; gap:10px; flex-wrap:wrap; }
+  .controls button { flex:1; min-width:96px; padding:12px 0; border:none; border-radius:10px;
+                     font-size:14px; color:#fff; cursor:pointer; }
+  #btnToggle { background:var(--accent); }
+  #btnSwitch { background:#6c757d; }
+  #btnPhoto { background:var(--ok); }
+
+  .settings { display:flex; align-items:center; gap:8px; }
+  .settings label { font-size:13px; color:#9aa; white-space:nowrap; width:62px; }
+  .settings select { flex:1; padding:8px 8px; border:none; border-radius:8px; font-size:13px;
+                     color:#fff; background:#3a3f45; }
+
+  .state { color:#9aa; }
+  .state.live { color:var(--ok); }
+
+  /* 横屏：视频窗放左侧，操作区放右侧 */
+  @media (orientation:landscape) {
+    .app { flex-direction:row; }
+    .stage { margin-right:8px; }
+    .panel { width:min(320px,42vw); padding:4px 12px 12px 0; overflow-y:auto; }
+    .controls button { min-width:100%; }
+  }
+
+  .perms { position:fixed; inset:0; background:rgba(0,0,0,.88); display:none;
+           align-items:center; justify-content:center; z-index:10; padding:24px; text-align:center; }
+  .perms .box { max-width:300px; }
+  .perms h3 { margin-bottom:10px; }
+  .perms p { font-size:13px; color:#ccd; line-height:1.8; }
+  .perms button { margin-top:14px; padding:11px 22px; background:var(--accent); color:#fff; border:none; border-radius:8px; font-size:14px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>手机摄像头传输</h1>
+    <p id="stateText" class="state">准备中…</p>
+  </header>
+
+  <div id="app" class="app">
+    <div id="stage" class="stage">
+      <video id="local" autoplay playsinline muted></video>
+      <div id="hint" class="hint">点击下方开始<br>(需授予摄像头权限)</div>
+    </div>
+
+    <div class="panel">
+      <div class="controls">
+        <button id="btnToggle">开启摄像头</button>
+        <button id="btnSwitch" onclick="switchCamera()">切换前后摄</button>
+        <button id="btnPhoto" onclick="takePhoto()">拍照</button>
+      </div>
+
+      <div class="settings">
+        <label for="brSel">码率</label>
+        <select id="brSel" onchange="onBitrateChange()">
+          <option value="800000">低 (0.8M)</option>
+          <option value="2500000" selected>标准 (2.5M)</option>
+          <option value="5000000">高 (5M)</option>
+          <option value="8000000">超高 (8M)</option>
+        </select>
+      </div>
+
+      <div class="settings">
+        <label for="resSel">分辨率</label>
+        <select id="resSel" onchange="onResChange()">
+          <option value="1080p">1080p</option>
+          <option value="720p" selected>720p</option>
+          <option value="480p">480p</option>
+        </select>
+      </div>
+
+      <div class="settings">
+        <label for="phSel">照片质量</label>
+        <select id="phSel">
+          <option value="high">高 (约5M)</option>
+          <option value="mid" selected>中 (约2M)</option>
+          <option value="low">低 (约1M)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="perms" class="perms">
+    <div class="box">
+      <h3>无法使用摄像头</h3>
+      <p>请允许浏览器访问摄像头权限，并确保页面通过 HTTPS 加载（可通过扫描电脑端二维码进入）。</p>
+      <button onclick="location.reload()">重试</button>
+    </div>
+  </div>
+
+<script>
+const local = document.getElementById('local');
+const hint = document.getElementById('hint');
+const stateText = document.getElementById('stateText');
+const btnToggle = document.getElementById('btnToggle');
+let stream = null, recorder = null, running = false;
+let facing = 'user'; // user=前置, environment=后置
+let gen = 0; // 录制代数，用于丢弃码率/分辨率切换时旧录制器残留的事件
+
+function wsURL(){ return (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'; }
+const ws = new WebSocket(wsURL());
+ws.binaryType = 'arraybuffer';
+ws.onopen = ()=>{ send({from:'phone', type:'hello'}); reportOrient(); };
+ws.onclose = ()=>{ state('已断开，请刷新页面重连', false); };
+
+// 上报手机屏幕方向，供电脑端据以旋转画面(解决 iOS 录制不改变画面尺寸、电脑端无法感知旋转的问题)
+function reportOrient(){
+  let a = 0;
+  if (window.screen && window.screen.orientation && typeof window.screen.orientation.angle === 'number'){
+    a = window.screen.orientation.angle;
+  } else if (typeof window.orientation === 'number'){
+    a = window.orientation;
+  }
+  if (a < 0) a += 360;
+  try{ send({type:'orient', angle:a}); }catch(e){}
+}
+if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener){
+  window.screen.orientation.addEventListener('change', reportOrient);
+}
+window.addEventListener('orientationchange', reportOrient);
+
+function send(obj){ ws.send(JSON.stringify(obj)); }
+function state(t, live){ stateText.textContent=t; stateText.className='state'+(live?' live':''); }
+
+// 挑选浏览器支持的录制容器/编码（安卓/Chrome 优先 webm，iPhone(Safari) 只支持 H.264/mp4）
+const PREFERRED = [
+  'video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm',
+  'video/mp4;codecs=avc1.42E01E', 'video/mp4'
+];
+function pickMime(){
+  for (const m of PREFERRED){
+    try{ if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; }catch(e){}
+  }
+  return '';
+}
+
+// 分辨率 → getUserMedia 视频约束
+const RES_SPEC = {
+  '480p':  { width:{ideal:854},  height:{ideal:480} },
+  '720p':  { width:{ideal:1280}, height:{ideal:720} },
+  '1080p': { width:{ideal:1920}, height:{ideal:1080} }
+};
+
+function switchCamera(){
+  if (!stream) return;
+  facing = (facing==='user') ? 'environment' : 'user';
+  state('正在切换摄像头…', false);
+  stopStreamOnly(); // 先彻底释放当前相机，否则 Android 会把后摄请求当“无权限”拒绝
+  if (running) startStream();
+}
+
+function stopStreamOnly(){
+  if (recorder && recorder.state!=='inactive'){ try{ recorder.stop(); }catch(e){} }
+  recorder = null;
+  if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  local.srcObject = null;
+}
+
+async function startStream(){
+  try {
+    const spec = RES_SPEC[document.getElementById('resSel').value] || RES_SPEC['720p'];
+    const s = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: spec.width, height: spec.height }, audio: false
+    });
+    stream = s;
+    local.srcObject = s;
+    hint.style.display='none';
+    beginRecord();
+  } catch(err){
+    console.error(err);
+    if (err && (err.name==='NotAllowedError'||err.name==='PermissionDeniedError'||err.name==='NotReadableError')){
+      document.getElementById('perms').style.display='flex';
+    } else {
+      state('摄像头获取失败: '+err.name, false);
+    }
+  }
+}
+
+function beginRecord(){
+  const mime = pickMime();
+  if (!window.MediaRecorder){
+    state('此浏览器不支持视频录制', false);
+    return;
+  }
+  const mygen = ++gen; // 本代录制器
+  const bits = parseInt(document.getElementById('brSel').value,10) || 2500000;
+  // 优先按探测到的容器创建录制器，取录制器实际采用的 MIME 作为编解码标识发给电脑端，
+  // 避免“猜的编码”与真实字节流不一致导致电脑端 MSE 无法播放(尤其 iPhone 的 mp4)。
+  const opts = mime ? { mimeType: mime, videoBitsPerSecond: bits } : { videoBitsPerSecond: bits };
+  try{
+    recorder = new MediaRecorder(stream, opts);
+  }catch(e){
+    try{ recorder = new MediaRecorder(stream); }catch(e2){ state('录制初始化失败', false); return; }
+  }
+  const actualMime = recorder.mimeType || mime || 'unknown';
+  send({type:'streaminfo', codec: actualMime});
+  recorder.ondataavailable = ev => {
+    if (mygen!==gen) return;               // 旧代残留数据丢弃
+    if (ev.data && ev.data.size>0 && ws.readyState===WebSocket.OPEN) ws.send(ev.data);
+  };
+  recorder.onstop = ()=>{ if (mygen===gen) send({type:'streamend'}); }; // 仅本代正常停止才发 streamend
+  recorder.start(200); // 每 200ms 产出一个小片段，兼顾延迟与效率
+  running = true;
+  state('正在传输，画面逐帧发送至电脑 [编码 '+actualMime+']', true);
+  btnToggle.textContent='停止传输';
+}
+
+// 码率切换：不停摄像头，只重启录制器（配合代数机制丢弃旧代残留，无需手动停止/开启）
+function onBitrateChange(){
+  if (!stream) return;
+  if (recorder && recorder.state!=='inactive') recorder.stop();
+  beginRecord();
+  state('码率已更新', true);
+  setTimeout(()=>{ if (running) state('正在传输，画面逐帧发送至电脑', true); }, 1500);
+}
+
+// 分辨率切换：重新获取对应分辨率的摄像头流
+function onResChange(){
+  if (stream){
+    stopStreamOnly();
+    startStream();
+  }
+}
+
+// 照片质量三档（近似输出尺寸，实际受画面复杂度影响）
+const PHOTO_Q = {
+  high: { maxW:2560, quality:0.92 },
+  mid:  { maxW:1920, quality:0.85 },
+  low:  { maxW:1280, quality:0.75 }
+};
+function takePhoto(){
+  if (!stream){ state('请先开启摄像头再拍照', false); return; }
+  const q = PHOTO_Q[document.getElementById('phSel').value] || PHOTO_Q.mid;
+  const w = local.videoWidth || 1280, h = local.videoHeight || 720;
+  const scale = Math.min(1, q.maxW / (w||1));
+  const cw = Math.max(1, Math.round(w*scale)), ch = Math.max(1, Math.round(h*scale));
+  const cv = document.createElement('canvas');
+  cv.width = cw; cv.height = ch;
+  cv.getContext('2d').drawImage(local, 0, 0, cw, ch);
+  const base64 = cv.toDataURL('image/jpeg', q.quality).split(',')[1];
+  send({type:'photo', data: base64});
+  state('照片已发送，已保存到电脑', true);
+  setTimeout(()=>{ if (recorder && recorder.state!=='inactive') state('正在传输，画面逐帧发送至电脑', true); }, 1200);
+}
+
+btnToggle.addEventListener('click', ()=>{
+  if (running){ stopAll(); return; }
+  state('正在启动摄像头…', false);
+  startStream();
+});
+
+function stopAll(){
+  if (running) try{ send({type:'stop'}); }catch(e){}
+  stopStreamOnly();
+  running=false;
+  hint.style.display='block';
+  state('已停止', false);
+  btnToggle.textContent='开启摄像头';
+}
+
+window.addEventListener('beforeunload', ()=>{ if(stream) stream.getTracks().forEach(t=>t.stop()); });
+</script>
+</body>
+</html>

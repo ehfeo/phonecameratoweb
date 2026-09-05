@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>手机摄像头投屏 - 电脑端</title>
+<style>
+  :root { --bg:#23272b; --panel:#eef1f5; --text:#333; --accent:#2f7ddf; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; }
+  body { background:var(--bg); color:#eef1f5; font-family:"Microsoft YaHei",system-ui,sans-serif; overflow:hidden; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px;
+           background:rgba(0,0,0,.35); border-bottom:1px solid rgba(255,255,255,.1); }
+  header h1 { font-size:18px; font-weight:600; letter-spacing:1px; }
+  .status { font-size:13px; color:#ffd76a; }
+  .status.ok { color:#7fe08a; }
+  main { display:flex; height:calc(100% - 51px); }
+  .screen { flex:1; display:flex; align-items:center; justify-content:center;
+            background:#000; margin:16px; border-radius:10px; overflow:hidden; position:relative; }
+  .screen video { width:100%; height:100%; object-fit:contain; }
+  .screen.off::after { content:"等待手机连接，扫描右侧二维码开始传输…"; position:absolute;
+            color:#889; font-size:15px; letter-spacing:1px; }
+  .dlog { position:absolute; top:8px; left:10px; color:#7fe08a; font-size:12px;
+          background:rgba(0,0,0,.5); padding:4px 8px; border-radius:6px;
+          font-family:Consolas,monospace; line-height:1.6; display:none; max-width:80%; }
+  .side { width:300px; padding:18px; display:flex; flex-direction:column; gap:14px;
+            overflow-y:auto; min-height:0; }
+  .card { background:var(--panel); color:var(--text); border-radius:10px; padding:16px; }
+  .card h3 { font-size:14px; margin-bottom:10px; color:var(--accent); }
+  .qr { text-align:center; }
+  .qr img { width:200px; height:200px; background:#fff; border-radius:8px; }
+  .iprow { margin-bottom:12px; }
+  .iprow label { font-size:13px; color:#555; display:block; margin-bottom:6px; white-space:nowrap; }
+  .iprow select { width:100%; padding:7px 8px; border:1px solid #bbb; border-radius:6px;
+                  font-size:13px; color:#333; background:#fff; cursor:pointer; text-overflow:ellipsis; }
+  .qr input { width:100%; margin-top:10px; padding:6px 8px; border:1px solid #bbb; border-radius:6px;
+              font-size:12px; color:#333; }
+  .steps { font-size:12.5px; line-height:1.9; color:#444; }
+  .steps b { color:#000; }
+  .qrbtn { margin-top:10px; width:100%; padding:8px; border:none; border-radius:6px; cursor:pointer;
+           background:var(--accent); color:#fff; font-size:14px; }
+  .qrbtn:hover { filter:brightness(1.1); }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; }
+  .badge.wait { background:#8a5b1d; color:#ffe0a0; }
+  .badge.live { background:#1d6b3a; color:#b5f7c7; }
+  .fsbtn { display:inline-block; margin-left:14px; padding:5px 14px; border:none; border-radius:6px;
+           cursor:pointer; background:#2f7ddf; color:#fff; font-size:13px; }
+  .fsbtn:hover { filter:brightness(1.1); }
+  .stopped { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+             color:#ffb03a; font-size:22px; letter-spacing:3px; background:rgba(0,0,0,.55); z-index:5; }
+  .stopped.show { display:flex; }
+  .camlist { margin-top:6px; }
+  .camlist button.cambio { display:block; width:100%; text-align:left; padding:8px 10px; margin-bottom:6px;
+          border:1px solid #bbb; border-radius:6px; background:#fff; color:#333; font-size:13px; cursor:pointer; }
+  .camlist button.cambio.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .camlist .empty, .photolist .empty { color:#999; font-size:12px; }
+  .photolist { max-height:180px; overflow:auto; display:block; }
+  .screen:fullscreen { margin:0; border-radius:0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>手机摄像头投屏 - 电脑端</h1>
+    <div><span id="connBadge" class="badge wait">等待传输端</span>
+         <span id="status" class="status">未连接</span>
+         <button class="fsbtn" onclick="toggleFullscreen()">全屏</button></div>
+  </header>
+  <main>
+    <div id="screen" class="screen off">
+      <video id="remote" autoplay playsinline muted></video>
+      <div id="stoppedTip" class="stopped">该手机已停止传输</div>
+      <div id="dlog" class="dlog"></div>
+    </div>
+    <aside class="side">
+      <div class="card">
+        <h3>在线手机</h3>
+        <div id="camList" class="camlist"><span class="empty">暂无</span></div>
+      </div>
+      <div class="card qr">
+        <h3>手机扫码传输</h3>
+        <div class="iprow">
+          <label for="ipSel">选择本机IP</label>
+          <select id="ipSel"></select>
+        </div>
+        <img id="qrImg" alt="加载中…">
+        <input id="senderUrl" readonly onclick="this.select()">
+        <button class="qrbtn" onclick="reloadQr()">重新生成二维码</button>
+      </div>
+      <div class="card">
+        <h3>保存的照片</h3>
+        <div id="photoList" class="photolist"><span class="empty">暂无</span></div>
+      </div>
+      <div class="card">
+        <h3>服务设置</h3>
+        <div style="display:flex; gap:6px; margin-top:4px;">
+          <input type="number" id="cfgPort" min="1" max="65535" style="flex:1; padding:7px 8px; border:1px solid #bbb; border-radius:6px; font-size:13px;">
+          <button onclick="saveConfig()" style="padding:7px 12px; border:none; border-radius:6px; background:var(--accent); color:#fff; font-size:13px; cursor:pointer;">保存</button>
+        </div>
+        <div style="font-size:11px; color:#999; margin-top:6px;">改端口需先保存，然后重启服务生效</div>
+        <div id="cfgMsg" style="font-size:12px; margin-top:4px;"></div>
+      </div>
+      <div class="card">
+        <h3>使用步骤</h3>
+        <div class="steps">
+          1. 手机与电脑连接<b>同一局域网</b><br>
+          2. 用<b>手机浏览器</b>(相机)扫上面的二维码<br>
+          3. 首次访问会提示证书不被信任，点<b>“继续访问/高级”</b>即可<br>
+          4. 在手机页面<b>授权摄像头</b>，画面即传到此电脑<br>
+          5. 若要切换前后摄像头，在<b>手机端</b>操作
+        </div>
+      </div>
+    </aside>
+  </main>
+
+<script>
+const video = document.getElementById('remote');
+const screen = document.getElementById('screen');
+const statusEl = document.getElementById('status');
+const badge = document.getElementById('connBadge');
+let connected = false;
+
+function wsURL(){ return (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'; }
+function send(obj){ ws.send(JSON.stringify(obj)); }
+function dlog(t){
+  const d = document.getElementById('dlog');
+  if (d){ d.style.display='block'; d.textContent = t; }
+}
+
+// ---- 多手机分流播放(MediaSource) ----
+const cams = {};           // 手机 id -> {codec, ms, sb, queue}
+let activeId = null;
+
+function cam(id){
+  if (!cams[id]) cams[id] = { codec:'', ms:null, sb:null, queue:[], lastAngle:0 };
+  return cams[id];
+}
+
+function makeSourceBuffer(ms, codec){
+  const tries = [codec];
+  const semi = codec.indexOf(';');
+  if (semi>0) tries.push(codec.slice(0, semi));            // 去掉 codecs 参数，退到裸容器
+  if (/^video\//.test(codec)) tries.push(codec.match(/^[^;]*/)[0]);
+  for (const t of tries){
+    try{ return ms.addSourceBuffer(t); }catch(e){ /* 试下一档 */ }
+  }
+  return null;
+}
+
+function startBuffer(id, codec){
+  const c = cam(id);
+  // 该路重新开始录制(如切摄像头)时，重建整条 MediaSource
+  if (c.ms){ try{ if (c.ms.readyState==='open') c.ms.endOfStream(); }catch(e){} c.ms=null; c.sb=null; }
+  c.codec = codec; c.queue = [];
+  c.ms = new MediaSource();
+  if (id === activeId) bindCam(id);
+  c.ms.addEventListener('sourceopen', ()=>{
+    c.sb = makeSourceBuffer(c.ms, codec);
+    if (!c.sb){
+      dlog('无法按编码建立播放器: '+codec);
+      return;
+    }
+    c.sb.mode = 'segments';
+    c.sb.addEventListener('updateend', ()=> drain(id));
+    drain(id);
+  }, {once:true});
+}
+
+function bindCam(id){
+  const c = cams[id]; if (!c) return;
+  activeId = id;
+  document.getElementById('stoppedTip').classList.remove('show');
+  if (c.ms) video.src = URL.createObjectURL(c.ms);
+  video.muted = true; video.playsInline = true;
+  video.play().catch(()=>{});
+  screen.classList.remove('off');
+  // 若该手机已记忆过屏幕方向，用已知编码重新应用正确的旋转策略
+  if (c.lastAngle) setVideoRot(id, c.lastAngle);
+  [...document.querySelectorAll('#camList button')].forEach(b=> b.classList.toggle('on', b.dataset.id===id));
+  updateCamLabel();
+}
+
+// 手机停止(按钮停止/断开)时，清除冻结画面并显示“已停止”
+function camStopped(id){
+  const c = cams[id];
+  if (c && c.ms){ try{ if(c.ms.readyState==='open') c.ms.endOfStream(); }catch(e){} }
+  const active = id === activeId;
+  const b = document.querySelector('#camList button[data-id="'+id+'"]');
+  if (active){
+    try{ video.src=''; }catch(e){}
+    activeId = null;
+    screen.classList.add('off');
+    const tip = document.getElementById('stoppedTip');
+    tip.classList.add('show');
+    statusEl.textContent = (c ? '手机 '+id : '') + '已停止';
+    statusEl.classList.remove('ok');
+    badge.textContent='等待传输端'; badge.className='badge wait';
+  }
+  if (b){ b.classList.remove('on'); b.textContent = b.textContent.replace(/\s*\(.*\)$/,'(已停止)'); if (active) b.classList.remove('on'); }
+  if (active) updateCamLabel();
+}
+
+// 按手机上报的方向旋转画面。
+// Android(webm)：录制帧自带正确方向与宽高比，旋转时不额外处理；
+// iOS(mp4)：录制画面尺寸不变，需靠方向信号转成横屏。
+function setVideoRot(id, angle){
+  const c = cams[id];
+  if (c) c.lastAngle = ((Number(angle)||0) % 360 + 360) % 360;
+  if (id !== activeId) return; // 只作用于当前正在显示的手机
+  const a = ((Number(angle)||0) % 360 + 360) % 360;
+  video.style.transform = '';
+  video.style.objectFit = 'contain';
+  // webm=安卓：原生已正确，不额外旋转
+  if (c && c.codec && /webm|vp8|vp9/i.test(c.codec)) return;
+  if (a === 0) return;
+  // iOS：取反向，90↔270 互换，0/180 不变，保证横屏内容正立
+  const rot = (360 - a) % 360;
+  const rw = screen.clientWidth || 800, rh = screen.clientHeight || 600;
+  const s = Math.max(rw/rh, rh/rw) * 1.06; // 旋转后放大以盖住容器四角
+  video.style.transform = 'rotate(' + rot + 'deg) scale(' + s.toFixed(3) + ')';
+  video.style.objectFit = 'cover';
+}
+
+function onChunk(id, buf){
+  cam(id).queue.push(buf);
+  drain(id);
+}
+
+function drain(id){
+  const c = cams[id]; if (!c) return;
+  let guard = 0;
+  while (c.sb && !c.sb.updating && c.queue.length && guard++ < 60){
+    const b = c.queue.shift();
+    try{ c.sb.appendBuffer(b); }catch(err){
+      // 缓冲区满等异常：删最旧 3 秒再重试
+      try{ if (c.sb.buffered.length){ const e=c.sb.buffered.end(c.sb.buffered.length-1); c.sb.remove(0, Math.max(0,e-3)); } }catch(x){}
+      c.queue.unshift(b); break;
+    }
+  }
+}
+
+function ensureCamButton(id){
+  let b = document.querySelector('#camList button[data-id="'+id+'"]');
+  if (b){ updateCamLabel(); return; }
+  b = document.createElement('button');
+  b.className='cambio'; b.dataset.id = id;
+  b.addEventListener('click', ()=> bindCam(id));
+  const empty = document.querySelector('#camList .empty');
+  if (empty) empty.remove();
+  document.getElementById('camList').appendChild(b);
+  updateCamLabel();
+}
+function updateCamLabel(){
+  [...document.querySelectorAll('#camList button')].forEach((b,i)=> b.textContent = '手机 '+(i+1)+(b.dataset.id===activeId?'  (显示中)':''));
+}
+
+function addPhoto(file){
+  const list = document.getElementById('photoList');
+  const empty = list.querySelector('.empty'); if (empty) empty.remove();
+  const a = document.createElement('a');
+  a.href = '/photos/'+file; a.target='_blank';
+  a.textContent = file;
+  a.style.display='block'; a.style.fontFamily='Consolas,monospace';
+  a.style.fontSize='11px'; a.style.marginBottom='4px';
+  list.prepend(a);
+}
+
+function handleSignal(msg){
+  if (msg.type === 'streaminfo'){
+    ensureCamButton(msg.id);
+    startBuffer(msg.id, msg.codec || msg.mime);
+    statusEl.textContent = '收到手机 '+msg.id;
+    statusEl.classList.add('ok');
+    badge.textContent='传输中'; badge.className='badge live';
+    if (activeId === null) bindCam(msg.id);
+  } else if (msg.type === 'streamend'){
+    const c = cams[msg.id];
+    if (c && c.ms && c.ms.readyState==='open'){ try{ c.ms.endOfStream(); }catch(e){} }
+  } else if (msg.type === 'photo_saved'){
+    addPhoto(msg.file);
+  } else if (msg.type === 'orient'){
+    setVideoRot(msg.id, msg.angle); // 手机方向 → 旋转画面
+  } else if (msg.type === 'stop' || msg.type === 'stopped'){
+    camStopped(msg.id); // 手机按钮停止/断开 → 清除画面并提示"已停止"
+  }
+}
+
+// ---- 全屏 ----
+function toggleFullscreen(){
+  if (!document.fullscreenElement){
+    (screen.requestFullscreen || screen.webkitRequestFullscreen || function(){}).call(screen);
+  } else {
+    (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+  }
+}
+
+// ---- 服务设置：读取/保存端口(下次启动生效) ----
+function loadConfig(){
+  fetch('/api/config').then(r=>r.json()).then(d=>{
+    const el = document.getElementById('cfgPort');
+    if (el && d.port) el.value = d.port;
+  }).catch(()=>{});
+}
+function saveConfig(){
+  const el = document.getElementById('cfgPort');
+  const msg = document.getElementById('cfgMsg');
+  const port = parseInt(el.value, 10);
+  if (!port || port<1 || port>65535){ msg.textContent='请输入 1-65535'; msg.style.color='#c0392b'; return; }
+  fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({port}) })
+    .then(r=>r.json()).then(d=>{
+      if (d.ok){ msg.textContent='已保存端口 '+d.port+'，'+d.apply; msg.style.color='#1d8f3c'; }
+      else { msg.textContent=d.msg||'保存失败'; msg.style.color='#c0392b'; }
+    }).catch(()=>{ msg.textContent='保存失败'; msg.style.color='#c0392b'; });
+}
+loadConfig();
+
+// ---- 信令 WebSocket(带自动重连；文本指令 + 二进制视频流) ----
+let ws = null, reconnectTimer = null;
+function connectWs(){
+  ws = new WebSocket(wsURL());
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = ()=>{ send({from:'display', type:'hello'}); statusEl.textContent='信令已连接'; };
+  ws.onmessage = e => {
+    if (typeof e.data === 'string'){
+      handleSignal(JSON.parse(e.data));
+    } else {
+      // 二进制帧格式：[1字节id长度][id][视频片段]
+      const arr = new Uint8Array(e.data);
+      const idLen = arr[0];
+      const id = String.fromCharCode.apply(null, arr.slice(1, 1+idLen));
+      connected = true;
+      onChunk(id, arr.slice(1+idLen));
+    }
+  };
+  ws.onclose = ()=>{ statusEl.textContent='信令断开，重连中…'; badge.className='badge wait';
+                     if (!reconnectTimer) reconnectTimer = setTimeout(()=>{ reconnectTimer=null; connectWs(); }, 1500); };
+  ws.onerror = ()=>{ try{ ws.close(); }catch(e){} };
+}
+connectWs();
+
+// ---- 二维码 / 信息 / IP 选择 ----
+const ipSel = document.getElementById('ipSel');
+let currentPort = 8443;
+
+function sendToUrl(ip){ return 'https://'+ip+':'+currentPort+'/sender'; }
+
+function showIp(ip){
+  document.getElementById('senderUrl').value = sendToUrl(ip);
+  document.getElementById('qrImg').src='/qr?ip='+encodeURIComponent(ip)+'&t='+Date.now();
+}
+
+ipSel.addEventListener('change', ()=>{ if(ipSel.value) showIp(ipSel.value); });
+
+function reloadQr(){
+  fetch('/api/info').then(r=>r.json()).then(d=>{
+    currentPort = d.port;
+    // 填充 IP 下拉框
+    ipSel.innerHTML = '';
+    d.ips.forEach(ip=>{
+      const o = document.createElement('option');
+      o.value = ip;
+      o.textContent = d.preferred===ip ? ip+' (推荐)' : ip;
+      ipSel.appendChild(o);
+    });
+    // 默认选中推荐 IP
+    ipSel.value = d.preferred;
+    showIp(d.preferred);
+  });
+}
+reloadQr();
+</script>
+</body>
+</html>
