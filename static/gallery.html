@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>照片 / 录像浏览</title>
+<style>
+  :root { --bg:#23272b; --accent:#2f7ddf; --danger:#c0392b; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { min-height:100%; }
+  body { background:var(--bg); color:#eef1f5; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:12px 20px;
+           background:rgba(0,0,0,.35); border-bottom:2px outset rgba(255,255,255,.12); flex-wrap:wrap; gap:8px; }
+  header h1 { font-size:18px; letter-spacing:1px; }
+  .tools { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  button.cn { border:2px outset #fff; background:linear-gradient(#4a9bff,var(--accent)); color:#fff;
+              padding:7px 16px; border-radius:7px; font-size:13px; cursor:pointer; font-weight:bold; }
+  button.cn:hover { filter:brightness(1.08); }
+  button.cn.plain { background:linear-gradient(#6b7280,#4b5563); }
+  a.back { color:#9cc4ff; font-size:13px; text-decoration:none; font-weight:bold; }
+  a.back:hover { text-decoration:underline; }
+
+  #msg { position:sticky; top:0; z-index:10; display:none; padding:10px 20px; font-size:13px;
+         border-bottom:1px solid rgba(255,255,255,.15); }
+  #msg.show { display:block; }
+  #msg.ok { background:#1d6b3a; color:#b5f7c7; }
+  #msg.err { background:#7a2222; color:#ffd0c4; }
+
+  /* 分类切换：两个 tab 一行平分，符合屏幕利用习惯 */
+  .tabs { display:flex; margin:16px 20px 0; }
+  .tabs button { flex:1; padding:10px; border:2px outset #fff; font-size:14px; font-weight:bold;
+                 cursor:pointer; color:#333; background:#e8ecef; }
+  .tabs button + button { border-left:none; }
+  .tabs button.on { background:linear-gradient(#4a9bff,var(--accent)); color:#fff; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px;
+          padding:18px 20px 30px; }
+  .cell { background:#fff; color:#333; border:3px outset #e6eaee; border-radius:10px; overflow:hidden;
+          display:flex; flex-direction:column; }
+  .thumb { position:relative; background:#111; height:140px; display:flex; align-items:center;
+           justify-content:center; overflow:hidden; cursor:pointer; }
+  .thumb img { width:100%; height:100%; object-fit:cover; }
+  .thumb video { width:100%; height:100%; object-fit:cover; background:#000; }
+  .thumb .ph { color:#cfe; font-size:40px; font-weight:bold; display:flex; align-items:center;
+               justify-content:center; width:100%; height:100%; background:linear-gradient(160deg,#355, #223); }
+  .thumb .open { position:absolute; bottom:6px; right:8px; font-size:11px; color:#fff;
+                 background:rgba(0,0,0,.55); padding:2px 7px; border-radius:5px; }
+  .meta { padding:8px 10px 10px; display:flex; flex-direction:column; gap:4px; }
+  .meta .name { font-size:12px; font-family:Consolas,monospace; color:#222; line-height:1.35;
+                word-break:break-all; max-height:34px; overflow:hidden; }
+  .meta .sub { font-size:11px; color:#888; }
+  .ops { display:flex; gap:6px; margin-top:6px; }
+  .ops button { flex:1; padding:6px 0; border:2px outset #fff; border-radius:6px; font-size:12px;
+                cursor:pointer; font-weight:bold; }
+  .ops .ren { background:linear-gradient(#ffd76a,#e0a32e); color:#4a3b00; }
+  .ops .del { background:linear-gradient(#ff8a80,#d64541); color:#fff; }
+  .empty { grid-column:1/-1; text-align:center; color:#999; font-size:14px; padding:50px 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>照片 / 录像浏览</h1>
+    <div class="tools">
+      <a class="back" href="/">返回主页面</a>
+      <button class="cn plain" onclick="refresh()">刷新</button>
+    </div>
+  </header>
+
+  <div id="msg"></div>
+
+  <div class="tabs">
+    <button id="tabPhoto" class="on" onclick="switchTab('photo')">照片</button>
+    <button id="tabRec" onclick="switchTab('rec')">录像</button>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+<script>
+let current = 'photo';
+
+function showMsg(text, ok){
+  const m = document.getElementById('msg');
+  m.textContent = text;
+  m.className = ok ? 'show ok' : 'show err';
+  clearTimeout(showMsg._t);
+  showMsg._t = setTimeout(()=> m.className='', 3000);
+}
+
+function switchTab(t){
+  current = t;
+  document.getElementById('tabPhoto').classList.toggle('on', t==='photo');
+  document.getElementById('tabRec').classList.toggle('on', t==='rec');
+  load();
+}
+
+function refresh(){ load(); }
+
+function fmtSize(n){
+  n = n||0;
+  return n>=1048576 ? (n/1048576).toFixed(1)+'MB' : Math.round(n/1024)+'KB';
+}
+
+// 媒体打开地址(type: photo/rec, name) → 相对 URL
+function mediaUrl(type, name){
+  const dir = type==='photo' ? 'photos' : 'recordings';
+  return '/'+dir+'/'+encodeURIComponent(name);
+}
+
+// 请求类型化API
+function api(type, op, body){
+  return fetch('/api/'+type+'/'+op, { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body) }).then(r=>r.json()).catch(()=>({ok:false, msg:'请求失败'}));
+}
+
+function delFile(type, name){
+  if (!confirm('确定删除「'+name+'」？此操作不可恢复。')) return;
+  api(type,'delete',{name}).then(d=>{
+    if (d && d.ok){ showMsg('已删除', true); load(); }
+    else { showMsg((d&&d.msg)||'删除失败', false); }
+  });
+}
+
+function renFile(type, name){
+  const np = prompt('输入新的文件名(保留原后缀)：', name);
+  if (!np || np === name) return;
+  api(type,'rename',{old:name, new:np}).then(d=>{
+    if (d && d.ok){ showMsg('已重命名', true); load(); }
+    else { showMsg((d&&d.msg)||'重命名失败', false); }
+  });
+}
+
+// 组装一个预览格子
+function buildCell(type, it, onClick){
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  thumb.title = '点击打开';
+  thumb.onclick = ()=> window.open(mediaUrl(type,it.Name), '_blank');
+
+  if (type==='photo'){
+    const img = document.createElement('img');
+    img.src = '/api/photo/thumb?name='+encodeURIComponent(it.Name)+'&v='+Date.now(); // 服务端缩略图，避免整图加载
+    img.alt = '';
+    img.onerror = ()=>{ // 缩略图不可用(如无ffmpeg)时退化为原图/占位
+      const full = 'photos/'+encodeURIComponent(it.Name);
+      if (img.src.indexOf('thumb')>=0){ img.src = full+'?v='+Date.now(); }
+      else { img.replaceWith(phEl(it.Name)); }
+    };
+    thumb.appendChild(img);
+  } else {
+    const v = document.createElement('video');
+    v.src = mediaUrl(type,it.Name); v.preload='metadata'; v.muted=true; v.playsInline=true;
+    v.onerror = ()=>{ v.replaceWith(phEl(it.Name)); };
+    thumb.appendChild(v);
+  }
+  const open = document.createElement('span');
+  open.className = 'open';
+  open.textContent = type==='photo' ? '查看' : '播放';
+  thumb.appendChild(open);
+  cell.appendChild(thumb);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const name = document.createElement('div');
+  name.className = 'name'; name.title=it.Name; name.textContent=it.Name;
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = fmtSize(it.Size) + ' · ' + (it.Time||'');
+  meta.appendChild(name); meta.appendChild(sub);
+
+  const ops = document.createElement('div');
+  ops.className = 'ops';
+  const ren = document.createElement('button');
+  ren.className='ren'; ren.textContent='重命名';
+  ren.onclick = ()=>{ event.stopPropagation(); renFile(type, it.Name); };
+  const del = document.createElement('button');
+  del.className='del'; del.textContent='删除';
+  del.onclick = ()=>{ event.stopPropagation(); delFile(type, it.Name); };
+  ops.appendChild(ren); ops.appendChild(del);
+  meta.appendChild(ops);
+  cell.appendChild(meta);
+  return cell;
+}
+
+// 无法预览时的占位(如非标准格式)
+function phEl(name){
+  const d = document.createElement('div');
+  d.className = 'ph';
+  d.textContent = name.replace(/\.[^.]+$/, '');
+  return d;
+}
+
+function load(){
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  const url = current==='photo' ? '/api/photos' : '/api/recordings';
+  fetch(url).then(r=>r.json()).then(items=>{
+    if (!items || !items.length){
+      grid.innerHTML = '<div class="empty">暂无'+(current==='photo'?'照片':'录像')+'</div>';
+      return;
+    }
+    items.forEach(it=> grid.appendChild(buildCell(current, it)));
+  }).catch(()=>{
+    grid.innerHTML = '<div class="empty">加载失败，请确认服务已启动</div>';
+  });
+}
+
+load();
+</script>
+</body>
+</html>

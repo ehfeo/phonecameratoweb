@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>手机摄像头传输</title>
 <style>
   :root { --bg:#23272b; --accent:#2f7ddf; --ok:#27ae60; }
@@ -37,12 +37,18 @@
   .state { color:#9aa; }
   .state.live { color:var(--ok); }
 
-  /* 横屏：视频窗放左侧，操作区放右侧 */
+  /* 横屏：视频窗放左侧，操作区放右侧(宽度减半，只留必要控件)
+     顶部留出 safe-area，避免“开始传输”等按钮顶在屏幕上方/被刘海裁掉显示不全 */
   @media (orientation:landscape) {
     .app { flex-direction:row; }
     .stage { margin-right:8px; }
-    .panel { width:min(320px,42vw); padding:4px 12px 12px 0; overflow-y:auto; }
-    .controls button { min-width:100%; }
+    .panel { width:min(185px,24vw); padding:calc(10px + env(safe-area-inset-top)) 10px 12px 0;
+             box-sizing:border-box; overflow-y:auto; }
+    .controls { gap:8px; margin-top:2px; }
+    .controls button { min-width:100%; font-size:13px; white-space:nowrap; }
+    .settings { gap:6px; }
+    .settings label { width:auto; font-size:12px; min-width:46px; }
+    .settings select, .settings input { font-size:12px; padding:7px 8px; }
   }
 
   .perms { position:fixed; inset:0; background:rgba(0,0,0,.88); display:none;
@@ -70,6 +76,16 @@
         <button id="btnToggle">开启摄像头</button>
         <button id="btnSwitch" onclick="switchCamera()">切换前后摄</button>
         <button id="btnPhoto" onclick="takePhoto()">拍照</button>
+      </div>
+
+      <div class="settings" style="align-items:stretch;">
+        <label for="myName" class="vname">昵称</label>
+        <input id="myName" placeholder="给自己起个名字(方便电脑端找)" style="flex:1; padding:8px 10px; border:none; border-radius:8px; font-size:13px; color:#fff; background:#3a3f45;">
+      </div>
+
+      <div class="settings" style="align-items:stretch;">
+        <label for="myTitle" class="vname">视频名</label>
+        <input id="myTitle" placeholder="给录像起个名(可选)" style="flex:1; padding:8px 10px; border:none; border-radius:8px; font-size:13px; color:#fff; background:#3a3f45;">
       </div>
 
       <div class="settings">
@@ -116,14 +132,40 @@ const hint = document.getElementById('hint');
 const stateText = document.getElementById('stateText');
 const btnToggle = document.getElementById('btnToggle');
 let stream = null, recorder = null, running = false;
-let facing = 'user'; // user=前置, environment=后置
+let facing = 'environment'; // environment=后置(默认), user=前置
 let gen = 0; // 录制代数，用于丢弃码率/分辨率切换时旧录制器残留的事件
 
 function wsURL(){ return (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'; }
 const ws = new WebSocket(wsURL());
 ws.binaryType = 'arraybuffer';
-ws.onopen = ()=>{ send({from:'phone', type:'hello'}); reportOrient(); };
+ws.onopen = ()=>{
+  const n = (localStorage.getItem('pcam_name')||'').trim();
+  send({from:'phone', type:'hello', name:n});
+  reportOrient();
+};
 ws.onclose = ()=>{ state('已断开，请刷新页面重连', false); };
+
+// 昵称：本地记忆，改动时立即同步给电脑端
+(function(){
+  const saved = (localStorage.getItem('pcam_name')||'').trim();
+  if (saved) document.getElementById('myName').value = saved;
+})();
+document.getElementById('myName').addEventListener('change', ()=>{
+  const v = document.getElementById('myName').value.trim();
+  try{ localStorage.setItem('pcam_name', v); }catch(e){}
+  if (ws.readyState===WebSocket.OPEN) send({type:'name', name:v});
+});
+
+// 视频名称：本地记忆，改动时立即同步给服务器(用于录像文件名前缀)
+(function(){
+  const saved = (localStorage.getItem('pcam_title')||'').trim();
+  if (saved) document.getElementById('myTitle').value = saved;
+})();
+document.getElementById('myTitle').addEventListener('change', ()=>{
+  const v = document.getElementById('myTitle').value.trim();
+  try{ localStorage.setItem('pcam_title', v); }catch(e){}
+  if (ws.readyState===WebSocket.OPEN) send({type:'videoTitle', title:v});
+});
 
 // 上报手机屏幕方向，供电脑端据以旋转画面(解决 iOS 录制不改变画面尺寸、电脑端无法感知旋转的问题)
 function reportOrient(){
@@ -144,10 +186,11 @@ window.addEventListener('orientationchange', reportOrient);
 function send(obj){ ws.send(JSON.stringify(obj)); }
 function state(t, live){ stateText.textContent=t; stateText.className='state'+(live?' live':''); }
 
-// 挑选浏览器支持的录制容器/编码（安卓/Chrome 优先 webm，iPhone(Safari) 只支持 H.264/mp4）
+// 挑选浏览器支持的录制容器/编码（安卓/Chrome 优先 webm，iPhone(Safari) 只支持 H.264/mp4）。
+// 音频统一走 opus(webm)/aac(mp4)；必须把音视频编码一起写上，MediaRecorder 才能同时收进麦克风声音。
 const PREFERRED = [
-  'video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm',
-  'video/mp4;codecs=avc1.42E01E', 'video/mp4'
+  'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm',
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'
 ];
 function pickMime(){
   for (const m of PREFERRED){
@@ -182,7 +225,7 @@ async function startStream(){
   try {
     const spec = RES_SPEC[document.getElementById('resSel').value] || RES_SPEC['720p'];
     const s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: spec.width, height: spec.height }, audio: false
+      video: { facingMode: facing, width: spec.width, height: spec.height }, audio: true
     });
     stream = s;
     local.srcObject = s;
@@ -215,7 +258,7 @@ function beginRecord(){
     try{ recorder = new MediaRecorder(stream); }catch(e2){ state('录制初始化失败', false); return; }
   }
   const actualMime = recorder.mimeType || mime || 'unknown';
-  send({type:'streaminfo', codec: actualMime});
+  send({type:'streaminfo', codec: actualMime, title: (document.getElementById('myTitle').value||'').trim()});
   recorder.ondataavailable = ev => {
     if (mygen!==gen) return;               // 旧代残留数据丢弃
     if (ev.data && ev.data.size>0 && ws.readyState===WebSocket.OPEN) ws.send(ev.data);
@@ -244,24 +287,75 @@ function onResChange(){
   }
 }
 
-// 照片质量三档（近似输出尺寸，实际受画面复杂度影响）
+// 照片质量三档：目标是高像素、高质量，与录像分辨率无关(独立取景)
 const PHOTO_Q = {
-  high: { maxW:2560, quality:0.92 },
-  mid:  { maxW:1920, quality:0.85 },
-  low:  { maxW:1280, quality:0.75 }
+  high: { maxW:4032, maxH:3024, quality:0.92 },
+  mid:  { maxW:2592, maxH:1944, quality:0.85 },
+  low:  { maxW:1600, maxH:1200, quality:0.8 }
 };
-function takePhoto(){
+
+function blobToBase64(blob){
+  return new Promise((res,rej)=>{
+    const fr = new FileReader();
+    fr.onload = ()=> res(String(fr.result).split(',')[1]);
+    fr.onerror = rej;
+    fr.readAsDataURL(blob);
+  });
+}
+function sendPhoto(base64){
+  if (!base64){ state('拍照失败', false); return; }
+  send({type:'photo', data: base64});
+  const bytes = Math.round(base64.length*3/4);
+  const mb = (bytes/1048576).toFixed(2);
+  state('照片已发送(约'+mb+'MB)，已保存到电脑', true);
+}
+
+async function takePhoto(){
   if (!stream){ state('请先开启摄像头再拍照', false); return; }
   const q = PHOTO_Q[document.getElementById('phSel').value] || PHOTO_Q.mid;
+  // 1) 优先独立高清拍照：临时再开一路高清摄像头取一张，不干扰正在进行的录像
+  try {
+    const photoStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: {ideal: q.maxW}, height: {ideal: q.maxH} }, audio: false
+    });
+    const pt = photoStream.getVideoTracks()[0];
+    try {
+      if (window.ImageCapture){
+        const ic = new ImageCapture(pt);
+        const blob = await ic.takePhoto({ imageWidth: q.maxW });
+        const b64 = await blobToBase64(blob);
+        sendPhoto(b64);
+        photoStream.getTracks().forEach(t=>t.stop());
+        setTimeout(()=>{ if (recorder && recorder.state!=='inactive') state('正在传输，画面逐帧发送至电脑', true); }, 1200);
+        return;
+      }
+    } catch(e){ /* 退到 picture 快照 */ }
+    // 2) ImageCapture 不可用：用临时高清流的画面截图(仍比录像分辨率高)
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.srcObject = photoStream;
+    v.autoplay = true;
+    const w = q.maxW, h = q.maxH;
+    const scale = Math.min(1, q.maxW/(v.videoWidth||w||1));
+    const cw = Math.max(1, Math.round((v.videoWidth||w)*scale)), ch = Math.max(1, Math.round((v.videoHeight||h)*scale));
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    await new Promise(r=>{ v.onloadeddata = ()=>{ try{ cv.getContext('2d').drawImage(v,0,0,cw,ch); }catch(e){} r(); }; setTimeout(r, 600); });
+    const b64 = cv.toDataURL('image/jpeg', q.quality).split(',')[1];
+    sendPhoto(b64);
+    photoStream.getTracks().forEach(t=>t.stop());
+    if (recorder && recorder.state!=='inactive') state('正在传输，画面逐帧发送至电脑', true);
+    return;
+  } catch(e){ /* 独立高清流失败 → 退回抓取当前录像画面 */ }
+
+  // 3) 兜底：直接从当前预览视频里截一帧
   const w = local.videoWidth || 1280, h = local.videoHeight || 720;
   const scale = Math.min(1, q.maxW / (w||1));
   const cw = Math.max(1, Math.round(w*scale)), ch = Math.max(1, Math.round(h*scale));
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   cv.getContext('2d').drawImage(local, 0, 0, cw, ch);
-  const base64 = cv.toDataURL('image/jpeg', q.quality).split(',')[1];
-  send({type:'photo', data: base64});
-  state('照片已发送，已保存到电脑', true);
+  const dataUrl = cv.toDataURL('image/jpeg', q.quality);
+  sendPhoto(dataUrl.split(',')[1]);
   setTimeout(()=>{ if (recorder && recorder.state!=='inactive') state('正在传输，画面逐帧发送至电脑', true); }, 1200);
 }
 

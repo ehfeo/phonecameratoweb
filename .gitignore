@@ -1,5 +1,12 @@
 # 运行期生成的目录与文件
 data/
 photos/
+recordings/
 *.exe
 *.exe.map
+*.log
+
+# 发布/测试产物
+phonecam-server.zip
+dist/
+trusttest/

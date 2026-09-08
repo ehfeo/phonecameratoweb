@@ -18,8 +18,13 @@
   .screen { flex:1; display:flex; align-items:center; justify-content:center;
             background:#000; margin:16px; border-radius:10px; overflow:hidden; position:relative; }
   .screen video { width:100%; height:100%; object-fit:contain; }
-  .screen.off::after { content:"等待手机连接，扫描右侧二维码开始传输…"; position:absolute;
-            color:#889; font-size:15px; letter-spacing:1px; }
+  .screenEmpty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+            justify-content:center; gap:12px; color:#889; font-size:15px; letter-spacing:1px;
+            text-align:center; padding:0 16px; }
+  .screenEmpty a { color:#7fb8ff; text-decoration:none; letter-spacing:0; font-size:13px; word-break:break-all; }
+  .screenEmpty a:hover { text-decoration:underline; }
+  .screen:not(.off) .screenEmpty { display:none; }
+  .screenEmpty .ghmk { font-size:13px; color:#778; letter-spacing:0; }
   .dlog { position:absolute; top:8px; left:10px; color:#7fe08a; font-size:12px;
           background:rgba(0,0,0,.5); padding:4px 8px; border-radius:6px;
           font-family:Consolas,monospace; line-height:1.6; display:none; max-width:80%; }
@@ -56,6 +61,17 @@
   .camlist .empty, .photolist .empty { color:#999; font-size:12px; }
   .photolist { max-height:180px; overflow:auto; display:block; }
   .screen:fullscreen { margin:0; border-radius:0; }
+  .exitfs { position:absolute; top:12px; right:14px; display:none; z-index:7; padding:7px 14px;
+            border:none; border-radius:6px; background:rgba(0,0,0,.6); color:#fff; font-size:13px; cursor:pointer;
+            border:1px solid rgba(255,255,255,.4); }
+  .exitfs:hover { background:rgba(0,0,0,.85); }
+  .screen:fullscreen .exitfs { display:block; }
+  .dl { font-size:12.5px; line-height:1.9; color:#444; }
+  .dl a { color:var(--accent); font-weight:bold; }
+  .galleryLink { display:block; padding:10px 12px; border:2px outset #fff; background:linear-gradient(#4a9bff,#2f7ddf);
+                 color:#fff; border-radius:8px; text-align:center; font-size:14px; font-weight:bold;
+                 text-decoration:none; box-shadow:0 2px 4px rgba(0,0,0,.3); }
+  .galleryLink:hover { filter:brightness(1.08); }
 </style>
 </head>
 <body>
@@ -63,17 +79,24 @@
     <h1>手机摄像头投屏 - 电脑端</h1>
     <div><span id="connBadge" class="badge wait">等待传输端</span>
          <span id="status" class="status">未连接</span>
-         <button class="fsbtn" onclick="toggleFullscreen()">全屏</button></div>
+         <button class="fsbtn" onclick="toggleFullscreen()">全屏</button>
+         <button id="soundBtn" class="fsbtn" onclick="toggleSound()">声音：开</button></div>
   </header>
   <main>
     <div id="screen" class="screen off">
       <video id="remote" autoplay playsinline muted></video>
+      <div id="screenEmpty" class="screenEmpty">
+        <div>等待手机连接，扫描右侧二维码开始传输…</div>
+        <span class="ghmk">项目开源：</span><a href="https://github.com/ehfeo/phonecameratoweb" target="_blank" rel="noopener">github.com/ehfeo/phonecameratoweb</a>
+      </div>
       <div id="stoppedTip" class="stopped">该手机已停止传输</div>
+      <button id="exitFs" class="exitfs" onclick="exitFullscreen()">退出全屏</button>
       <div id="dlog" class="dlog"></div>
     </div>
     <aside class="side">
       <div class="card">
         <h3>在线手机</h3>
+        <input id="camSearch" placeholder="搜索手机(按昵称/序号)" style="width:100%; padding:7px 8px; border:1px solid #bbb; border-radius:6px; font-size:13px; color:#333; background:#fff; margin-bottom:8px;">
         <div id="camList" class="camlist"><span class="empty">暂无</span></div>
       </div>
       <div class="card qr">
@@ -87,17 +110,19 @@
         <button class="qrbtn" onclick="reloadQr()">重新生成二维码</button>
       </div>
       <div class="card">
-        <h3>保存的照片</h3>
-        <div id="photoList" class="photolist"><span class="empty">暂无</span></div>
+        <h3>照片 / 录像</h3>
+        <a class="galleryLink" href="/gallery" target="_blank" rel="noopener">打开浏览页（缩略图预览 · 删除 · 重命名）</a>
+        <div style="margin-top:12px; display:flex; align-items:center; gap:6px;">
+          <input id="recToggle" type="checkbox" checked> 自动录制每次投屏
+        </div>
+        <div style="font-size:11px; color:#999; margin-top:6px;">端口在启动控制台用 <b>-port 端口</b> 指定，保存后自动沿用</div>
       </div>
       <div class="card">
-        <h3>服务设置</h3>
-        <div style="display:flex; gap:6px; margin-top:4px;">
-          <input type="number" id="cfgPort" min="1" max="65535" style="flex:1; padding:7px 8px; border:1px solid #bbb; border-radius:6px; font-size:13px;">
-          <button onclick="saveConfig()" style="padding:7px 12px; border:none; border-radius:6px; background:var(--accent); color:#fff; font-size:13px; cursor:pointer;">保存</button>
+        <h3>手机连不上本机网络？</h3>
+        <div class="dl">
+          若手机无法与服务器连接相同网络，可<a id="dlLink" href="#" download>下载软件包</a>独立运行：<br>
+          在另一台可被手机访问的电脑上解压运行，再用<b>手机开热点给电脑共享网络</b>，扫码即可解决问题。
         </div>
-        <div style="font-size:11px; color:#999; margin-top:6px;">改端口需先保存，然后重启服务生效</div>
-        <div id="cfgMsg" style="font-size:12px; margin-top:4px;"></div>
       </div>
       <div class="card">
         <h3>使用步骤</h3>
@@ -118,6 +143,14 @@ const screen = document.getElementById('screen');
 const statusEl = document.getElementById('status');
 const badge = document.getElementById('connBadge');
 let connected = false;
+let soundOn = true; // 默认播放声音(手机端已采集麦克风传输)
+
+function toggleSound(){
+  soundOn = !soundOn;
+  video.muted = !soundOn;
+  document.getElementById('soundBtn').textContent = soundOn ? '声音：开' : '声音：关';
+  if (soundOn){ try{ video.play().catch(()=>{}); }catch(e){} }
+}
 
 function wsURL(){ return (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'; }
 function send(obj){ ws.send(JSON.stringify(obj)); }
@@ -131,7 +164,7 @@ const cams = {};           // 手机 id -> {codec, ms, sb, queue}
 let activeId = null;
 
 function cam(id){
-  if (!cams[id]) cams[id] = { codec:'', ms:null, sb:null, queue:[], lastAngle:0 };
+  if (!cams[id]) cams[id] = { codec:'', ms:null, sb:null, queue:[], lastAngle:0, name:'', title:'' };
   return cams[id];
 }
 
@@ -170,8 +203,8 @@ function bindCam(id){
   activeId = id;
   document.getElementById('stoppedTip').classList.remove('show');
   if (c.ms) video.src = URL.createObjectURL(c.ms);
-  video.muted = true; video.playsInline = true;
-  video.play().catch(()=>{});
+  video.muted = !soundOn; video.playsInline = true; // 依用户声音开关决定(手机端已采集麦克风一并传输)
+  try{ video.play().catch(()=>{ video.muted = true; video.play().catch(()=>{}); }); }catch(e){} // 自动播放被禁则退回静音播放，避免黑屏卡住
   screen.classList.remove('off');
   // 若该手机已记忆过屏幕方向，用已知编码重新应用正确的旋转策略
   if (c.lastAngle) setVideoRot(id, c.lastAngle);
@@ -186,7 +219,9 @@ function camStopped(id){
   const active = id === activeId;
   const b = document.querySelector('#camList button[data-id="'+id+'"]');
   if (active){
-    try{ video.src=''; }catch(e){}
+    // 彻底清空显示区：释放视频源并强制 reload，避免残留最后一帧
+    try{ video.src=''; video.removeAttribute('src'); video.load(); }catch(e){}
+    video.style.transform=''; video.style.objectFit='contain';
     activeId = null;
     screen.classList.add('off');
     const tip = document.getElementById('stoppedTip');
@@ -240,43 +275,53 @@ function drain(id){
 
 function ensureCamButton(id){
   let b = document.querySelector('#camList button[data-id="'+id+'"]');
-  if (b){ updateCamLabel(); return; }
+  if (b){ updateCamLabel(); applySearch(); return; }
   b = document.createElement('button');
   b.className='cambio'; b.dataset.id = id;
   b.addEventListener('click', ()=> bindCam(id));
   const empty = document.querySelector('#camList .empty');
   if (empty) empty.remove();
-  document.getElementById('camList').appendChild(b);
+  const list = document.getElementById('camList');
+  // 新手机放在最前，方便在多台里找刚接入的
+  list.prepend(b);
   updateCamLabel();
-}
-function updateCamLabel(){
-  [...document.querySelectorAll('#camList button')].forEach((b,i)=> b.textContent = '手机 '+(i+1)+(b.dataset.id===activeId?'  (显示中)':''));
+  applySearch();
 }
 
-function addPhoto(file){
-  const list = document.getElementById('photoList');
-  const empty = list.querySelector('.empty'); if (empty) empty.remove();
-  const a = document.createElement('a');
-  a.href = '/photos/'+file; a.target='_blank';
-  a.textContent = file;
-  a.style.display='block'; a.style.fontFamily='Consolas,monospace';
-  a.style.fontSize='11px'; a.style.marginBottom='4px';
-  list.prepend(a);
+// 按昵称/文字过滤手机列表
+function applySearch(){
+  const q = (document.getElementById('camSearch').value||'').trim().toLowerCase();
+  [...document.querySelectorAll('#camList button')].forEach(b=>{
+    const c = cams[b.dataset.id];
+    const label = (c && c.name) ? c.name : b.textContent;
+    const hit = !q || label.toLowerCase().indexOf(q) >= 0;
+    b.style.display = hit ? '' : 'none';
+  });
+}
+function updateCamLabel(){
+  [...document.querySelectorAll('#camList button')].forEach((b,i)=>{
+    const c = cams[b.dataset.id];
+    let label = (c && c.name) ? c.name : ('手机 '+(i+1));
+    if (c && c.title) label = c.title + ' · ' + label; // 视频名称放在前，便于识别录像对应哪台
+    b.textContent = label + (b.dataset.id===activeId?'  (显示中)':'');
+  });
 }
 
 function handleSignal(msg){
   if (msg.type === 'streaminfo'){
+    cam(msg.id).name = msg.name || '';         // 记录手机昵称，用于列表显示
     ensureCamButton(msg.id);
     startBuffer(msg.id, msg.codec || msg.mime);
     statusEl.textContent = '收到手机 '+msg.id;
     statusEl.classList.add('ok');
     badge.textContent='传输中'; badge.className='badge live';
     if (activeId === null) bindCam(msg.id);
-  } else if (msg.type === 'streamend'){
-    const c = cams[msg.id];
-    if (c && c.ms && c.ms.readyState==='open'){ try{ c.ms.endOfStream(); }catch(e){} }
-  } else if (msg.type === 'photo_saved'){
-    addPhoto(msg.file);
+  } else if (msg.type === 'name'){
+    cam(msg.id).name = msg.name || '';         // 手机在线时改了昵称，即时刷新列表
+    updateCamLabel();
+  } else if (msg.type === 'videoTitle'){
+    cam(msg.id).title = msg.title || '';       // 手机设置视频名称，即时在列表中标出
+    updateCamLabel();
   } else if (msg.type === 'orient'){
     setVideoRot(msg.id, msg.angle); // 手机方向 → 旋转画面
   } else if (msg.type === 'stop' || msg.type === 'stopped'){
@@ -292,26 +337,11 @@ function toggleFullscreen(){
     (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
   }
 }
-
-// ---- 服务设置：读取/保存端口(下次启动生效) ----
-function loadConfig(){
-  fetch('/api/config').then(r=>r.json()).then(d=>{
-    const el = document.getElementById('cfgPort');
-    if (el && d.port) el.value = d.port;
-  }).catch(()=>{});
+function exitFullscreen(){
+  try{
+    (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+  }catch(e){}
 }
-function saveConfig(){
-  const el = document.getElementById('cfgPort');
-  const msg = document.getElementById('cfgMsg');
-  const port = parseInt(el.value, 10);
-  if (!port || port<1 || port>65535){ msg.textContent='请输入 1-65535'; msg.style.color='#c0392b'; return; }
-  fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({port}) })
-    .then(r=>r.json()).then(d=>{
-      if (d.ok){ msg.textContent='已保存端口 '+d.port+'，'+d.apply; msg.style.color='#1d8f3c'; }
-      else { msg.textContent=d.msg||'保存失败'; msg.style.color='#c0392b'; }
-    }).catch(()=>{ msg.textContent='保存失败'; msg.style.color='#c0392b'; });
-}
-loadConfig();
 
 // ---- 信令 WebSocket(带自动重连；文本指令 + 二进制视频流) ----
 let ws = null, reconnectTimer = null;
@@ -346,6 +376,7 @@ function sendToUrl(ip){ return 'https://'+ip+':'+currentPort+'/sender'; }
 function showIp(ip){
   document.getElementById('senderUrl').value = sendToUrl(ip);
   document.getElementById('qrImg').src='/qr?ip='+encodeURIComponent(ip)+'&t='+Date.now();
+  document.getElementById('dlLink').href = 'https://'+ip+':'+currentPort+'/download';
 }
 
 ipSel.addEventListener('change', ()=>{ if(ipSel.value) showIp(ipSel.value); });
@@ -367,6 +398,19 @@ function reloadQr(){
   });
 }
 reloadQr();
+
+// ---- 自动录制开关 ----
+function initRecToggle(){
+  fetch('/api/recording').then(r=>r.json()).then(d=>{
+    document.getElementById('recToggle').checked = !!d.recording;
+  }).catch(()=>{});
+  document.getElementById('recToggle').addEventListener('change', e=>{
+    fetch('/api/recording', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({recording: e.target.checked}) }).catch(()=>{});
+  });
+}
+initRecToggle();
+document.getElementById('camSearch').addEventListener('input', applySearch);
 </script>
 </body>
 </html>
